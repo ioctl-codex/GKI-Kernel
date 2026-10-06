@@ -128,7 +128,7 @@ jobs:
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j"$(nproc --all)"
 
       # ---------------------------------------------------------------------
-      - name: Swap in Aetherium kernel tree (branch: ${{ env.BASE_BRANCH }})
+      - name: Swap in Aetherium kernel tree (${{ env.BASE_BRANCH }})
         run: |
           set -euxo pipefail
           cd gki/common
