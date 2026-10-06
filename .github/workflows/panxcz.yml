@@ -209,37 +209,34 @@ jobs:
           DEFCONFIG=arch/arm64/configs/gki_defconfig
 
           if [ "${{ inputs.variant }}" != "C-charging-gaming" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-
-# ---- PanxCZ: root + SUSFS hiding ----
-CONFIG_KSU=y
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_SU=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-EOF
+            printf '%s\n' \
+              "" \
+              "# ---- PanxCZ: root + SUSFS hiding ----" \
+              "CONFIG_KSU=y" \
+              "CONFIG_KSU_SUSFS=y" \
+              "CONFIG_KSU_SUSFS_SUS_PATH=y" \
+              "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
+              "CONFIG_KSU_SUSFS_SUS_KSTAT=y" \
+              "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" \
+              "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" \
+              "CONFIG_KSU_SUSFS_SUS_SU=y" \
+              "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" \
+              "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
+              "CONFIG_KSU_SUSFS_ENABLE_LOG=y" \
+              "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" \
+              >> "$DEFCONFIG"
           fi
 
           if [ "${{ inputs.variant }}" != "B-susfs-hiding" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-
-# ---- PanxCZ: responsiveness / gaming (Helio G99) ----
-CONFIG_HZ_300=y
-CONFIG_HZ=300
-CONFIG_ZRAM=y
-CONFIG_ZRAM_WRITEBACK=y
-CONFIG_CRYPTO_LZ4HC=y
-CONFIG_TCP_CONG_BBR3=y
-CONFIG_DEFAULT_BBR3=y
-CONFIG_NET_SCH_FQ=y
-EOF
+            printf '%s\n' \
+              "" \
+              "# ---- PanxCZ: responsiveness / gaming (Helio G99) ----" \
+              "CONFIG_HZ_300=y" \
+              "CONFIG_HZ=300" \
+              "CONFIG_TCP_CONG_BBR3=y" \
+              "CONFIG_DEFAULT_BBR3=y" \
+              "CONFIG_NET_SCH_FQ=y" \
+              >> "$DEFCONFIG"
           fi
 
           echo "--- tail defconfig ---"
@@ -279,14 +276,14 @@ EOF
           KSTR="${KERNEL_NAME} Kernel (${KERNEL_CODENAME}-based) for ${DEVICE_MODEL} by ${KERNEL_NAME}"
           sed -i "s|^kernel.string=.*|kernel.string=${KSTR}|" anykernel.sh
           sed -i "s|^do.devicecheck=.*|do.devicecheck=0|" anykernel.sh
-          cat > module.prop <<EOF
-id=${KERNEL_NAME}
-name=${KERNEL_NAME} Kernel
-version=v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}
-versionCode=${GITHUB_RUN_NUMBER}
-author=${KERNEL_NAME}
-description=Optimized and rebranded from Aetherium GKI (credit kaminarich) for ${DEVICE_PLATFORM}
-EOF
+          printf '%s\n' \
+            "id=${KERNEL_NAME}" \
+            "name=${KERNEL_NAME} Kernel" \
+            "version=v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}" \
+            "versionCode=${GITHUB_RUN_NUMBER}" \
+            "author=${KERNEL_NAME}" \
+            "description=Optimized and rebranded from Aetherium GKI (credit kaminarich) for ${DEVICE_PLATFORM}" \
+            > module.prop
           cp "${{ steps.out.outputs.image }}" ./Image
           cd ..
           ZIP="${{ steps.ver.outputs.zip }}"
@@ -313,31 +310,31 @@ EOF
         run: |
           set -euxo pipefail
           TAG="v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}"
-          cat > /tmp/notes.md <<EOF
-# ${KERNEL_NAME} Kernel ${TAG}
-
-**Device:** ${DEVICE_MODEL}
-**Platform:** ${DEVICE_PLATFORM}
-**Variant:** ${{ inputs.variant }}
-**Kernel version:** \`${{ steps.out.outputs.kver }}${{ steps.ver.outputs.extra }}\`
-**Base:** Aetherium GKI Kernel (\`kaminarich/GKI-Kernel\`, branch \`aetherium\`)
-
-## Changelog
-- Rebrand layer: **${KERNEL_NAME}** (version string, boot banner, AnyKernel3, output name)
-- Root solution: **ReSukiSU ${{ inputs.resukisu_ref }}** (multi-manager support)
-- Hiding: **SUSFS** (\`susfs4ksu\` @ \`${{ inputs.susfs_branch }}\`) with \`CONFIG_KSU_SUSFS_*\` enabled
-- Retained Aetherium core: **BBRv3** (default TCP), Reflex + Schedhorizon governors, **ADIOS** I/O scheduler, DAMON, PELT halflife 12, RT softirq optimization, Droidspace
-- Tuning: \`CONFIG_HZ=300\`, ZRAM + LZ4HC writeback, FQ qdisc
-- Build: LTO=${{ inputs.lto }}, AOSP prebuilt clang toolchain
-
-## Install
-Flash the \`AnyKernel3.zip\` from recovery or the KernelSU manager.
-**Always back up your boot partition first.**
-
-## Credit
-All original kernel work belongs to **kaminarich (Aetherium GKI Kernel)** and to
-upstream Linux / AOSP. ${KERNEL_NAME} is a rebrand + tuning layer, not original work.
-EOF
+          printf '%s\n' \
+            "# ${KERNEL_NAME} Kernel ${TAG}" \
+            "" \
+            "**Device:** ${DEVICE_MODEL}" \
+            "**Platform:** ${DEVICE_PLATFORM}" \
+            "**Variant:** ${{ inputs.variant }}" \
+            "**Kernel version:** ${{ steps.out.outputs.kver }}${{ steps.ver.outputs.extra }}" \
+            "**Base:** Aetherium GKI Kernel (kaminarich/GKI-Kernel, branch aetherium)" \
+            "" \
+            "## Changelog" \
+            "- Rebrand layer: **${KERNEL_NAME}** (version string, boot banner, AnyKernel3, output name)" \
+            "- Root solution: **ReSukiSU ${{ inputs.resukisu_ref }}** (multi-manager support)" \
+            "- Hiding: **SUSFS** (susfs4ksu @ ${{ inputs.susfs_branch }}) with CONFIG_KSU_SUSFS_* enabled" \
+            "- Retained Aetherium core: **BBRv3** (default TCP), Reflex + Schedhorizon governors, **ADIOS** I/O scheduler, DAMON, PELT halflife 12, RT softirq optimization, Droidspace" \
+            "- Tuning: CONFIG_HZ=300, ZRAM + LZ4HC writeback, FQ qdisc" \
+            "- Build: LTO=${{ inputs.lto }}, AOSP prebuilt clang toolchain" \
+            "" \
+            "## Install" \
+            "Flash the AnyKernel3.zip from recovery or the KernelSU manager." \
+            "**Always back up your boot partition first.**" \
+            "" \
+            "## Credit" \
+            "All original kernel work belongs to **kaminarich (Aetherium GKI Kernel)** and to upstream Linux / AOSP." \
+            "${KERNEL_NAME} is a rebrand + tuning layer, not original work." \
+            > /tmp/notes.md
           gh release create "$TAG" \
             --title "${KERNEL_NAME} Kernel ${TAG} (${{ inputs.variant }})" \
             --notes-file /tmp/notes.md \
