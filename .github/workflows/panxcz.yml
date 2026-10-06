@@ -8,10 +8,10 @@
 #
 #  CREDIT  : All core kernel work belongs to the Aetherium project (kaminarich)
 #            and upstream Linux / AOSP. PanxCZ is only a rebrand + tuning layer
-#            on top of it. See the generated README for the full credit list.
+#            on top of it. See the generated release notes for the credit list.
 #
 #  This pipeline is idempotent and re-runnable. Nothing is hardcoded to a
-#  specific fork owner: FORK_REPO is taken from the running repository.
+#  specific fork owner - the fork is taken from the running repository.
 # =============================================================================
 
 name: PanxCZ Kernel Build
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: "Varian build"
+        description: "Varian build (A/B/C)"
         required: true
         default: "A-full-allin"
         type: choice
@@ -58,7 +58,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # ---- Branding (semua yang berhubungan dengan nama ada di sini) ----
+  # ---- Branding: semua yang berhubungan dengan nama ada di sini ----
   KERNEL_NAME: PanxCZ
   KERNEL_RELEASE: "1.0"
   KERNEL_CODENAME: "Aetherium"
@@ -97,10 +97,10 @@ jobs:
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
           SUFFIX="${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}-${DATE}"
-          echo "suffix=${SUFFIX}"            >> "$GITHUB_OUTPUT"
-          echo "extra=-${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "zip=${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}-${DATE}-AnyKernel3.zip" >> "$GITHUB_OUTPUT"
-          echo "Banner suffix : ${SUFFIX}"
+          EXTRA="-${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}-${DATE}"
+          echo "extra=${EXTRA}" >> "$GITHUB_OUTPUT"
+          echo "zip=${SUFFIX}-AnyKernel3.zip" >> "$GITHUB_OUTPUT"
+          echo "Banner suffix: ${SUFFIX}"
 
       # ---------------------------------------------------------------------
       - name: Install dependencies
@@ -114,13 +114,13 @@ jobs:
           curl -s https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
-          git config --global user.name  "${{ github.actor }}"
+          git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor }}@users.noreply.github.com"
 
       # ---------------------------------------------------------------------
       # AOSP manifest gives us the `build/` tooling + prebuilts + a matching
       # `common/` tree. We then swap `common/` for the Aetherium branch.
-      - name: Fetch AOSP build toolchain (manifest android12-5.10)
+      - name: Fetch AOSP build toolchain
         run: |
           set -euxo pipefail
           mkdir -p gki && cd gki
@@ -128,7 +128,7 @@ jobs:
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j"$(nproc --all)"
 
       # ---------------------------------------------------------------------
-      - name: Swap in Aetherium kernel tree (${{ env.BASE_BRANCH }})
+      - name: Swap in Aetherium kernel tree
         run: |
           set -euxo pipefail
           cd gki/common
@@ -137,10 +137,11 @@ jobs:
           git checkout -f FETCH_HEAD
           git checkout -B panxcz-build
           git clean -fdx
-          echo "--- HEAD ---"; git log --oneline -3
-          # sanity: Aetherium perf work must be present
+          echo "--- HEAD ---"
+          git log --oneline -3
+          echo "--- sanity check ---"
           grep -q "CONFIG_TCP_CONG_BBR3=y" arch/arm64/configs/gki_defconfig \
-            && echo "OK: BBRv3 present" \
+            && echo "OK: Aetherium tree detected (BBRv3 present)" \
             || { echo "ERROR: Aetherium tree not detected"; exit 1; }
 
       # ---------------------------------------------------------------------
@@ -149,7 +150,7 @@ jobs:
           set -euxo pipefail
           cd gki/common
 
-          # 1) Kernel version string -> 5.10.269-PanxCZ-1.0.<run>
+          # 1) Kernel version string -> 5.10.269-PanxCZ-...
           sed -i 's|^EXTRAVERSION *=.*|EXTRAVERSION = ${{ steps.ver.outputs.extra }}|' Makefile
           grep '^EXTRAVERSION' Makefile
 
@@ -158,9 +159,10 @@ jobs:
           chmod +x scripts/setlocalversion
 
           # 3) Boot banner (best-effort, non fatal)
+          BANNER="${KERNEL_NAME} kernel - based on Aetherium GKI by kaminarich - ${DEVICE_MODEL}"
           if grep -q 'pr_notice("%s", linux_banner);' init/main.c; then
-            sed -i 's|pr_notice("%s", linux_banner);|pr_notice("%s", linux_banner);\n\tpr_notice("'"${KERNEL_NAME}"' kernel | based on Aetherium GKI by kaminarich | '"${DEVICE_MODEL}"'\\n");|' init/main.c
-            grep -n "PanxCZ kernel" init/main.c || true
+            sed -i "s|pr_notice(\"%s\", linux_banner);|pr_notice(\"%s\", linux_banner);\n\tpr_notice(\"${BANNER}\\\\n\");|" init/main.c
+            grep -n "Aetherium GKI by kaminarich" init/main.c || true
           fi
 
           # 4) Allow non-GKI configs (KSU/SUSFS) - disable defconfig re-check
@@ -168,7 +170,7 @@ jobs:
           cat build.config.gki
 
       # ---------------------------------------------------------------------
-      - name: Integrate root solution (ReSukiSU ${{ inputs.resukisu_ref }})
+      - name: Integrate root solution
         if: ${{ inputs.variant != 'C-charging-gaming' }}
         run: |
           set -euxo pipefail
@@ -176,12 +178,12 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/${{ inputs.resukisu_ref }}/kernel/setup.sh" > /tmp/ksu-setup.sh
           sh /tmp/ksu-setup.sh "${{ inputs.resukisu_ref }}"
           echo "--- integration check ---"
-          test -L drivers/kernelsu && echo "OK: drivers/kernelsu symlink"
+          test -L drivers/kernelsu && echo "OK: drivers/kernelsu symlink present"
           grep -n kernelsu drivers/Makefile || true
           grep -n kernelsu drivers/Kconfig || true
 
       # ---------------------------------------------------------------------
-      - name: Apply SUSFS (${{ inputs.susfs_branch }})
+      - name: Apply SUSFS
         if: ${{ inputs.variant != 'C-charging-gaming' }}
         run: |
           set -euxo pipefail
@@ -189,17 +191,18 @@ jobs:
           rm -rf /tmp/susfs
           git clone --depth 1 -b "${{ inputs.susfs_branch }}" "${SUSFS_REPO}" /tmp/susfs
           rm -rf /tmp/susfs/.git
-          cp -rf /tmp/susfs/kernel_patches/fs/*             fs/
-          cp -rf /tmp/susfs/kernel_patches/include/linux/*  include/linux/
-          # --forward: lewati hunk yang sudah ada di tree aetherium, pasang sisanya
+          cp -rf /tmp/susfs/kernel_patches/fs/* fs/
+          cp -rf /tmp/susfs/kernel_patches/include/linux/* include/linux/
+          # --forward: skip hunks already present in the aetherium tree
           patch -p1 --forward --no-backup-if-mismatch \
             < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch \
-            || echo "WARN: sebagian hunk dilewati (normal untuk tree aetherium)"
+            || echo "WARN: some hunks skipped (expected on the aetherium tree)"
           echo "--- SUSFS files ---"
-          ls -l fs/susfs.c fs/*susfs* include/linux/susfs* 2>/dev/null || true
+          ls -l fs/susfs.c 2>/dev/null || echo "ERROR: fs/susfs.c missing"
+          ls -l include/linux/susfs.h 2>/dev/null || true
 
       # ---------------------------------------------------------------------
-      - name: Inject defconfig (SUSFS / gaming / charging / HZ)
+      - name: Inject defconfig
         run: |
           set -euxo pipefail
           cd gki/common
@@ -207,6 +210,7 @@ jobs:
 
           if [ "${{ inputs.variant }}" != "C-charging-gaming" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
+
 # ---- PanxCZ: root + SUSFS hiding ----
 CONFIG_KSU=y
 CONFIG_KSU_SUSFS=y
@@ -225,17 +229,16 @@ EOF
 
           if [ "${{ inputs.variant }}" != "B-susfs-hiding" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
+
 # ---- PanxCZ: responsiveness / gaming (Helio G99) ----
 CONFIG_HZ_300=y
 CONFIG_HZ=300
 CONFIG_ZRAM=y
 CONFIG_ZRAM_WRITEBACK=y
-CONFIG_ZRAM_MEMORY_TRACKING=y
 CONFIG_CRYPTO_LZ4HC=y
 CONFIG_TCP_CONG_BBR3=y
 CONFIG_DEFAULT_BBR3=y
 CONFIG_NET_SCH_FQ=y
-CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
 EOF
           fi
 
@@ -243,8 +246,7 @@ EOF
           tail -35 "$DEFCONFIG"
 
       # ---------------------------------------------------------------------
-      - name: Build kernel (LTO=${{ inputs.lto }})
-        id: build
+      - name: Build kernel
         run: |
           set -euxo pipefail
           cd gki
@@ -256,15 +258,15 @@ EOF
         run: |
           set -euxo pipefail
           IMAGE=$(find gki/out -type f -name Image | head -n 1)
-          test -n "$IMAGE" || { echo "ERROR: Image not found"; find gki/out -maxdepth 4 -type d | head -30; exit 1; }
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: Image not found"
+            find gki/out -maxdepth 4 -type d | head -30
+            exit 1
+          fi
           KVER=$(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) = ' gki/common/Makefile | awk '{print $3}' | paste -sd.)
           echo "kver=${KVER}" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           ls -lh "$IMAGE"
-          # KMI sanity (modules from ROM must still be able to load)
-          if [ -f gki/out/android12-5.10/common/Module.symvers ]; then
-            echo "Module.symvers: $(wc -l < gki/out/android12-5.10/common/Module.symvers) symbols"
-          fi
 
       # ---------------------------------------------------------------------
       - name: Package AnyKernel3 zip
@@ -274,21 +276,22 @@ EOF
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
           rm -rf .git .github
-          sed -i 's|^kernel.string=.*|kernel.string='"${KERNEL_NAME}"' Kernel ('"${KERNEL_CODENAME}"'-based) for '"${DEVICE_MODEL}"' by '"${KERNEL_NAME}"'|' anykernel.sh
-          sed -i 's|^do.devicecheck=.*|do.devicecheck=0|' anykernel.sh
+          KSTR="${KERNEL_NAME} Kernel (${KERNEL_CODENAME}-based) for ${DEVICE_MODEL} by ${KERNEL_NAME}"
+          sed -i "s|^kernel.string=.*|kernel.string=${KSTR}|" anykernel.sh
+          sed -i "s|^do.devicecheck=.*|do.devicecheck=0|" anykernel.sh
           cat > module.prop <<EOF
 id=${KERNEL_NAME}
 name=${KERNEL_NAME} Kernel
 version=v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}
 versionCode=${GITHUB_RUN_NUMBER}
 author=${KERNEL_NAME}
-description=Optimized + rebranded from Aetherium GKI (credit: kaminarich) for ${DEVICE_PLATFORM}
+description=Optimized and rebranded from Aetherium GKI (credit kaminarich) for ${DEVICE_PLATFORM}
 EOF
           cp "${{ steps.out.outputs.image }}" ./Image
           cd ..
           ZIP="${{ steps.ver.outputs.zip }}"
-          zip -r9 "$ZIP" anykernel -x '*.git*' >/dev/null
-          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          zip -r9 "$ZIP" anykernel -x '*.git*' > /dev/null
+          echo "zip=${ZIP}" >> "$GITHUB_OUTPUT"
           ls -lh "$ZIP"
 
       # ---------------------------------------------------------------------
@@ -311,30 +314,30 @@ EOF
           set -euxo pipefail
           TAG="v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}"
           cat > /tmp/notes.md <<EOF
-          # ${KERNEL_NAME} Kernel ${TAG}
+# ${KERNEL_NAME} Kernel ${TAG}
 
-          **Device:** ${DEVICE_MODEL}
-          **Platform:** ${DEVICE_PLATFORM}
-          **Variant:** ${{ inputs.variant }}
-          **Base:** Aetherium GKI Kernel (\`kaminarich/GKI-Kernel\`, branch \`aetherium\`)
-          **Kernel version:** \`${{ steps.out.outputs.kver }}${{ steps.ver.outputs.extra }}\`
+**Device:** ${DEVICE_MODEL}
+**Platform:** ${DEVICE_PLATFORM}
+**Variant:** ${{ inputs.variant }}
+**Kernel version:** \`${{ steps.out.outputs.kver }}${{ steps.ver.outputs.extra }}\`
+**Base:** Aetherium GKI Kernel (\`kaminarich/GKI-Kernel\`, branch \`aetherium\`)
 
-          ## Changelog
-          - Rebrand layer: **${KERNEL_NAME}** (version string, banner, AnyKernel3, output name)
-          - Root solution: **ReSukiSU ${{ inputs.resukisu_ref }}** (multi-manager support)
-          - Hiding: **SUSFS** (\`susfs4ksu\` @ \`${{ inputs.susfs_branch }}\`) with \`CONFIG_KSU_SUSFS_*\` enabled
-          - Retained Aetherium core: **BBRv3** (default TCP), Reflex & Schedhorizon governors, **ADIOS** I/O scheduler, DAMON, PELT halflife 12, RT softirq opt, Droidspace
-          - Tuning: \`CONFIG_HZ=300\`, ZRAM + LZ4HC writeback, FQ qdisc
-          - Build: LTO=${{ inputs.lto }}, toolchain = AOSP prebuilt clang
+## Changelog
+- Rebrand layer: **${KERNEL_NAME}** (version string, boot banner, AnyKernel3, output name)
+- Root solution: **ReSukiSU ${{ inputs.resukisu_ref }}** (multi-manager support)
+- Hiding: **SUSFS** (\`susfs4ksu\` @ \`${{ inputs.susfs_branch }}\`) with \`CONFIG_KSU_SUSFS_*\` enabled
+- Retained Aetherium core: **BBRv3** (default TCP), Reflex + Schedhorizon governors, **ADIOS** I/O scheduler, DAMON, PELT halflife 12, RT softirq optimization, Droidspace
+- Tuning: \`CONFIG_HZ=300\`, ZRAM + LZ4HC writeback, FQ qdisc
+- Build: LTO=${{ inputs.lto }}, AOSP prebuilt clang toolchain
 
-          ## Install
-          Flash \`${KERNEL_NAME}-...-AnyKernel3.zip\` from recovery / KernelSU manager.
-          **Always back up your boot partition first.**
+## Install
+Flash the \`AnyKernel3.zip\` from recovery or the KernelSU manager.
+**Always back up your boot partition first.**
 
-          ## Credit
-          All original kernel work: **kaminarich (Aetherium GKI Kernel)** and upstream
-          Linux / AOSP. ${KERNEL_NAME} is a rebrand + tuning layer, not original work.
-          EOF
+## Credit
+All original kernel work belongs to **kaminarich (Aetherium GKI Kernel)** and to
+upstream Linux / AOSP. ${KERNEL_NAME} is a rebrand + tuning layer, not original work.
+EOF
           gh release create "$TAG" \
             --title "${KERNEL_NAME} Kernel ${TAG} (${{ inputs.variant }})" \
             --notes-file /tmp/notes.md \
