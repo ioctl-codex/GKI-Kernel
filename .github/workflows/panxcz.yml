@@ -145,6 +145,38 @@ jobs:
             || { echo "ERROR: Aetherium tree not detected"; exit 1; }
 
       # ---------------------------------------------------------------------
+      # The aetherium tree asks for clang-r563880b, but the AOSP
+      # common-android12-5.10 manifest (default rev master-kernel-build-2021)
+      # ships clang-r416183b. Point CLANG_PREBUILT_BIN at whatever is present.
+      - name: Fix toolchain path (clang)
+        run: |
+          set -euxo pipefail
+          cd gki/common
+          CLANGROOT="../prebuilts-master/clang/host/linux-x86"
+          echo "--- available clang ---"
+          ls -d "$CLANGROOT"/clang-*/ 2>/dev/null || echo "(none)"
+          WANT="${CLANGROOT}/clang-r563880b/bin/clang"
+          if [ -x "$WANT" ]; then
+            echo "OK: expected clang present"
+          else
+            DET=$(ls -d "$CLANGROOT"/clang-r*/ 2>/dev/null | sort -V | tail -1)
+            if [ -z "$DET" ]; then
+              echo "ERROR: no clang prebuilt found under $CLANGROOT"; exit 1
+            fi
+            NAME=$(basename "$DET")
+            echo "Auto-detected clang: $NAME"
+            sed -i "s|^CLANG_PREBUILT_BIN=.*|CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/${NAME}/bin|" build.config.common
+          fi
+          echo "--- result ---"
+          grep -E '^CLANG_PREBUILT_BIN' build.config.common
+          CPD=$(grep '^CLANG_PREBUILT_BIN=' build.config.common | cut -d= -f2)
+          if [ -x "../${CPD}/clang" ]; then
+            echo "OK: clang resolved -> ../${CPD}/clang"
+          else
+            echo "ERROR: clang still not found at ../${CPD}/clang"; exit 1
+          fi
+
+      # ---------------------------------------------------------------------
       - name: Rebrand to PanxCZ
         run: |
           set -euxo pipefail
