@@ -1,0 +1,342 @@
+# =============================================================================
+#  PanxCZ Kernel - CI/CD Build Pipeline
+# =============================================================================
+#  Device  : Infinix Note 30 (X6833B) - MediaTek Helio G99 (MT6789)
+#  Platform: GKI 5.10 / android12-5.10 / KMI generation 9
+#  Base    : Aetherium GKI Kernel by kaminarich
+#            https://github.com/kaminarich/GKI-Kernel  (branch: aetherium)
+#
+#  CREDIT  : All core kernel work belongs to the Aetherium project (kaminarich)
+#            and upstream Linux / AOSP. PanxCZ is only a rebrand + tuning layer
+#            on top of it. See the generated README for the full credit list.
+#
+#  This pipeline is idempotent and re-runnable. Nothing is hardcoded to a
+#  specific fork owner: FORK_REPO is taken from the running repository.
+# =============================================================================
+
+name: PanxCZ Kernel Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Varian build"
+        required: true
+        default: "A-full-allin"
+        type: choice
+        options:
+          - A-full-allin
+          - B-susfs-hiding
+          - C-charging-gaming
+      resukisu_ref:
+        description: "ReSukiSU tag/ref (root solution)"
+        required: true
+        default: "v4.1.0"
+      susfs_branch:
+        description: "susfs4ksu branch"
+        required: true
+        default: "gki-android12-5.10"
+      lto:
+        description: "LTO mode"
+        required: true
+        default: "thin"
+        type: choice
+        options:
+          - thin
+          - none
+      publish_release:
+        description: "Buat GitHub Release + changelog?"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: panxcz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # ---- Branding (semua yang berhubungan dengan nama ada di sini) ----
+  KERNEL_NAME: PanxCZ
+  KERNEL_RELEASE: "1.0"
+  KERNEL_CODENAME: "Aetherium"
+  DEVICE_MODEL: "Infinix Note 30 (X6833B)"
+  DEVICE_PLATFORM: "MediaTek Helio G99 (MT6789) - GKI 5.10 android12 / KMI gen 9"
+
+  # ---- Source ----
+  BASE_BRANCH: aetherium
+  AOSP_MANIFEST: https://android.googlesource.com/kernel/manifest
+  AOSP_BRANCH: common-android12-5.10
+  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+
+jobs:
+  build:
+    name: PanxCZ ${{ inputs.variant }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+
+    steps:
+      # ---------------------------------------------------------------------
+      - name: Free runner disk space + add swap
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 10240
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+
+      # ---------------------------------------------------------------------
+      - name: Compute version strings
+        id: ver
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          SUFFIX="${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}-${DATE}"
+          echo "suffix=${SUFFIX}"            >> "$GITHUB_OUTPUT"
+          echo "extra=-${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "zip=${KERNEL_NAME}-${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}-${DATE}-AnyKernel3.zip" >> "$GITHUB_OUTPUT"
+          echo "Banner suffix : ${SUFFIX}"
+
+      # ---------------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            git curl build-essential bc bison flex libssl-dev libelf-dev \
+            python3 python3-pip unzip zip rsync libncurses-dev lld cpio kmod
+          mkdir -p "$HOME/bin"
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name  "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
+      # ---------------------------------------------------------------------
+      # AOSP manifest gives us the `build/` tooling + prebuilts + a matching
+      # `common/` tree. We then swap `common/` for the Aetherium branch.
+      - name: Fetch AOSP build toolchain (manifest android12-5.10)
+        run: |
+          set -euxo pipefail
+          mkdir -p gki && cd gki
+          repo init -u "${AOSP_MANIFEST}" -b "${AOSP_BRANCH}" --depth=1
+          repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j"$(nproc --all)"
+
+      # ---------------------------------------------------------------------
+      - name: Swap in Aetherium kernel tree (branch: ${{ env.BASE_BRANCH }})
+        run: |
+          set -euxo pipefail
+          cd gki/common
+          git remote add panxcz "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 panxcz "${BASE_BRANCH}"
+          git checkout -f FETCH_HEAD
+          git checkout -B panxcz-build
+          git clean -fdx
+          echo "--- HEAD ---"; git log --oneline -3
+          # sanity: Aetherium perf work must be present
+          grep -q "CONFIG_TCP_CONG_BBR3=y" arch/arm64/configs/gki_defconfig \
+            && echo "OK: BBRv3 present" \
+            || { echo "ERROR: Aetherium tree not detected"; exit 1; }
+
+      # ---------------------------------------------------------------------
+      - name: Rebrand to PanxCZ
+        run: |
+          set -euxo pipefail
+          cd gki/common
+
+          # 1) Kernel version string -> 5.10.269-PanxCZ-1.0.<run>
+          sed -i 's|^EXTRAVERSION *=.*|EXTRAVERSION = ${{ steps.ver.outputs.extra }}|' Makefile
+          grep '^EXTRAVERSION' Makefile
+
+          # 2) Kill git-based localversion so the version stays deterministic
+          : > scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+
+          # 3) Boot banner (best-effort, non fatal)
+          if grep -q 'pr_notice("%s", linux_banner);' init/main.c; then
+            sed -i 's|pr_notice("%s", linux_banner);|pr_notice("%s", linux_banner);\n\tpr_notice("'"${KERNEL_NAME}"' kernel | based on Aetherium GKI by kaminarich | '"${DEVICE_MODEL}"'\\n");|' init/main.c
+            grep -n "PanxCZ kernel" init/main.c || true
+          fi
+
+          # 4) Allow non-GKI configs (KSU/SUSFS) - disable defconfig re-check
+          sed -i 's|^POST_DEFCONFIG_CMDS=.*|POST_DEFCONFIG_CMDS=""|' build.config.gki
+          cat build.config.gki
+
+      # ---------------------------------------------------------------------
+      - name: Integrate root solution (ReSukiSU ${{ inputs.resukisu_ref }})
+        if: ${{ inputs.variant != 'C-charging-gaming' }}
+        run: |
+          set -euxo pipefail
+          cd gki/common
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/${{ inputs.resukisu_ref }}/kernel/setup.sh" > /tmp/ksu-setup.sh
+          sh /tmp/ksu-setup.sh "${{ inputs.resukisu_ref }}"
+          echo "--- integration check ---"
+          test -L drivers/kernelsu && echo "OK: drivers/kernelsu symlink"
+          grep -n kernelsu drivers/Makefile || true
+          grep -n kernelsu drivers/Kconfig || true
+
+      # ---------------------------------------------------------------------
+      - name: Apply SUSFS (${{ inputs.susfs_branch }})
+        if: ${{ inputs.variant != 'C-charging-gaming' }}
+        run: |
+          set -euxo pipefail
+          cd gki/common
+          rm -rf /tmp/susfs
+          git clone --depth 1 -b "${{ inputs.susfs_branch }}" "${SUSFS_REPO}" /tmp/susfs
+          rm -rf /tmp/susfs/.git
+          cp -rf /tmp/susfs/kernel_patches/fs/*             fs/
+          cp -rf /tmp/susfs/kernel_patches/include/linux/*  include/linux/
+          # --forward: lewati hunk yang sudah ada di tree aetherium, pasang sisanya
+          patch -p1 --forward --no-backup-if-mismatch \
+            < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch \
+            || echo "WARN: sebagian hunk dilewati (normal untuk tree aetherium)"
+          echo "--- SUSFS files ---"
+          ls -l fs/susfs.c fs/*susfs* include/linux/susfs* 2>/dev/null || true
+
+      # ---------------------------------------------------------------------
+      - name: Inject defconfig (SUSFS / gaming / charging / HZ)
+        run: |
+          set -euxo pipefail
+          cd gki/common
+          DEFCONFIG=arch/arm64/configs/gki_defconfig
+
+          if [ "${{ inputs.variant }}" != "C-charging-gaming" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+# ---- PanxCZ: root + SUSFS hiding ----
+CONFIG_KSU=y
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_SU=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+EOF
+          fi
+
+          if [ "${{ inputs.variant }}" != "B-susfs-hiding" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+# ---- PanxCZ: responsiveness / gaming (Helio G99) ----
+CONFIG_HZ_300=y
+CONFIG_HZ=300
+CONFIG_ZRAM=y
+CONFIG_ZRAM_WRITEBACK=y
+CONFIG_ZRAM_MEMORY_TRACKING=y
+CONFIG_CRYPTO_LZ4HC=y
+CONFIG_TCP_CONG_BBR3=y
+CONFIG_DEFAULT_BBR3=y
+CONFIG_NET_SCH_FQ=y
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+EOF
+          fi
+
+          echo "--- tail defconfig ---"
+          tail -35 "$DEFCONFIG"
+
+      # ---------------------------------------------------------------------
+      - name: Build kernel (LTO=${{ inputs.lto }})
+        id: build
+        run: |
+          set -euxo pipefail
+          cd gki
+          LTO="${{ inputs.lto }}" BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+
+      # ---------------------------------------------------------------------
+      - name: Locate build output
+        id: out
+        run: |
+          set -euxo pipefail
+          IMAGE=$(find gki/out -type f -name Image | head -n 1)
+          test -n "$IMAGE" || { echo "ERROR: Image not found"; find gki/out -maxdepth 4 -type d | head -30; exit 1; }
+          KVER=$(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) = ' gki/common/Makefile | awk '{print $3}' | paste -sd.)
+          echo "kver=${KVER}" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          ls -lh "$IMAGE"
+          # KMI sanity (modules from ROM must still be able to load)
+          if [ -f gki/out/android12-5.10/common/Module.symvers ]; then
+            echo "Module.symvers: $(wc -l < gki/out/android12-5.10/common/Module.symvers) symbols"
+          fi
+
+      # ---------------------------------------------------------------------
+      - name: Package AnyKernel3 zip
+        id: pack
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          cd anykernel
+          rm -rf .git .github
+          sed -i 's|^kernel.string=.*|kernel.string='"${KERNEL_NAME}"' Kernel ('"${KERNEL_CODENAME}"'-based) for '"${DEVICE_MODEL}"' by '"${KERNEL_NAME}"'|' anykernel.sh
+          sed -i 's|^do.devicecheck=.*|do.devicecheck=0|' anykernel.sh
+          cat > module.prop <<EOF
+id=${KERNEL_NAME}
+name=${KERNEL_NAME} Kernel
+version=v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}
+versionCode=${GITHUB_RUN_NUMBER}
+author=${KERNEL_NAME}
+description=Optimized + rebranded from Aetherium GKI (credit: kaminarich) for ${DEVICE_PLATFORM}
+EOF
+          cp "${{ steps.out.outputs.image }}" ./Image
+          cd ..
+          ZIP="${{ steps.ver.outputs.zip }}"
+          zip -r9 "$ZIP" anykernel -x '*.git*' >/dev/null
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          ls -lh "$ZIP"
+
+      # ---------------------------------------------------------------------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.KERNEL_NAME }}-${{ inputs.variant }}-${{ github.run_number }}
+          path: |
+            ${{ steps.pack.outputs.zip }}
+            ${{ steps.out.outputs.image }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---------------------------------------------------------------------
+      - name: Publish GitHub Release + changelog
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG="v${KERNEL_RELEASE}.${GITHUB_RUN_NUMBER}"
+          cat > /tmp/notes.md <<EOF
+          # ${KERNEL_NAME} Kernel ${TAG}
+
+          **Device:** ${DEVICE_MODEL}
+          **Platform:** ${DEVICE_PLATFORM}
+          **Variant:** ${{ inputs.variant }}
+          **Base:** Aetherium GKI Kernel (\`kaminarich/GKI-Kernel\`, branch \`aetherium\`)
+          **Kernel version:** \`${{ steps.out.outputs.kver }}${{ steps.ver.outputs.extra }}\`
+
+          ## Changelog
+          - Rebrand layer: **${KERNEL_NAME}** (version string, banner, AnyKernel3, output name)
+          - Root solution: **ReSukiSU ${{ inputs.resukisu_ref }}** (multi-manager support)
+          - Hiding: **SUSFS** (\`susfs4ksu\` @ \`${{ inputs.susfs_branch }}\`) with \`CONFIG_KSU_SUSFS_*\` enabled
+          - Retained Aetherium core: **BBRv3** (default TCP), Reflex & Schedhorizon governors, **ADIOS** I/O scheduler, DAMON, PELT halflife 12, RT softirq opt, Droidspace
+          - Tuning: \`CONFIG_HZ=300\`, ZRAM + LZ4HC writeback, FQ qdisc
+          - Build: LTO=${{ inputs.lto }}, toolchain = AOSP prebuilt clang
+
+          ## Install
+          Flash \`${KERNEL_NAME}-...-AnyKernel3.zip\` from recovery / KernelSU manager.
+          **Always back up your boot partition first.**
+
+          ## Credit
+          All original kernel work: **kaminarich (Aetherium GKI Kernel)** and upstream
+          Linux / AOSP. ${KERNEL_NAME} is a rebrand + tuning layer, not original work.
+          EOF
+          gh release create "$TAG" \
+            --title "${KERNEL_NAME} Kernel ${TAG} (${{ inputs.variant }})" \
+            --notes-file /tmp/notes.md \
+            "${{ steps.pack.outputs.zip }}" \
+            "${{ steps.out.outputs.image }}"
